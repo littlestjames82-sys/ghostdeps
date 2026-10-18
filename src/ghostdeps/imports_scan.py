@@ -40,7 +40,13 @@ METHOD_LABELS = {
 
 
 class ImportIndex:
-    """module top-level name -> {files, ecosystem, method, class}"""
+    """Collected imports: module top-level name -> record.
+
+    Each record holds the files importing the module, its ecosystem,
+    the extraction method label, and its classification (``local``,
+    ``stdlib``, or ``third``). Also tracks files scanned per ecosystem,
+    Python parse failures, and files skipped under local ignore rules.
+    """
 
     def __init__(self):
         self.records: dict[tuple[str, str], dict] = {}
@@ -52,6 +58,7 @@ class ImportIndex:
 
     def add(self, ecosystem: str, module: str, rel_file: str,
             klass: str, method: str):
+        """Record that ``rel_file`` imports ``module`` under ``klass``."""
         key = (ecosystem, module)
         rec = self.records.get(key)
         if rec is None:
@@ -110,8 +117,14 @@ def fname_is(directory: Path, name: str) -> bool:
 def _scan_python(idx: ImportIndex, fpath: Path, rel: str,
                  local: set[str], stdlib: set[str]):
     try:
-        tree = ast.parse(fpath.read_text(encoding="utf-8", errors="replace"))
-    except (SyntaxError, ValueError):
+        # utf-8-sig: a byte-order mark left by a Windows editor used to
+        # make ast.parse reject the whole file, silently dropping every
+        # import in it. A file that vanishes or cannot be read between
+        # discovery and scanning is a parse failure, not a crash of the
+        # whole scan (the JS and Rust scanners already treat it so).
+        tree = ast.parse(fpath.read_text(encoding="utf-8-sig",
+                                         errors="replace"))
+    except (SyntaxError, ValueError, OSError, RecursionError):
         idx.parse_failures.append(rel)
         return
     idx.files_scanned["python"] += 1
@@ -341,7 +354,7 @@ def _strip_js_comments(text: str) -> str:
 
 def _scan_js(idx: ImportIndex, fpath: Path, rel: str, local: set[str]):
     try:
-        text = fpath.read_text(encoding="utf-8", errors="replace")
+        text = fpath.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return
     idx.files_scanned["javascript"] += 1
@@ -368,14 +381,84 @@ _RS_EXTERN = re.compile(r"^\s*extern\s+crate\s+([A-Za-z_][\w]*)")
 _RS_RESERVED = {"crate", "self", "super", "std"}
 
 
+def _strip_rust_comments(text: str) -> str:
+    """Blank out Rust // and /* */ comments, preserving newlines.
+
+    Rust block comments nest. String and char contents are kept as-is
+    (a ``use`` line is only matched at a line start, which a string
+    body cannot fake except inside a multi-line literal; that residue
+    is part of the outline-level limit). Without this, the body of a
+    block comment such as::
+
+        /*
+        use phantomcrate;
+        */
+
+    was reported as a real import of ``phantomcrate``.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    depth = 0  # block-comment nesting depth; 0 means code
+    while i < n:
+        if depth:
+            if text.startswith("/*", i):
+                depth += 1
+                out.extend("  ")
+                i += 2
+            elif text.startswith("*/", i):
+                depth -= 1
+                out.extend("  ")
+                i += 2
+            else:
+                out.append("\n" if text[i] == "\n" else " ")
+                i += 1
+            continue
+        if text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                out.append(" ")
+                i += 1
+            continue
+        if text.startswith("/*", i):
+            depth = 1
+            out.extend("  ")
+            i += 2
+            continue
+        ch = text[i]
+        if ch in ("'", '"'):
+            # Copy a char/string literal verbatim so a // or /* inside
+            # it is not mistaken for a comment. Char literals are at
+            # most a few characters; lifetimes ('a) have no closing
+            # quote and simply fall through the scan limit below.
+            quote = ch
+            j = i + 1
+            while j < n and j - i <= 1024:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == quote or text[j] == "\n":
+                    break
+                j += 1
+            if j < n and text[j] == quote:
+                out.append(text[i:j + 1])
+                i = j + 1
+            else:
+                out.append(ch)
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _scan_rust(idx: ImportIndex, fpath: Path, rel: str, local: set[str]):
     try:
-        text = fpath.read_text(encoding="utf-8", errors="replace")
+        text = fpath.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return
     idx.files_scanned["rust"] += 1
     crates: set[str] = set()
-    for line in text.splitlines():
+    for line in _strip_rust_comments(text).splitlines():
         m = _RS_USE.match(line) or _RS_EXTERN.match(line)
         if m:
             crates.add(m.group(1))
@@ -391,6 +474,13 @@ def _scan_rust(idx: ImportIndex, fpath: Path, rel: str, local: set[str]):
 # ----------------------------------------------------------------- entry
 
 def scan_imports(root: Path) -> ImportIndex:
+    """Scan every non-ignored source file under ``root`` for imports.
+
+    Local names are collected first (ignoring ignore rules, so an
+    ignored file can still prove a name is local), then ``.gitignore``
+    files and the root ``.ghostslice.json`` ignore list decide which
+    files are actually scanned. Returns the populated index.
+    """
     idx = ImportIndex()
     files = list(_iter_sources(root))
     local = _local_names(root, files)

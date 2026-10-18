@@ -5,6 +5,21 @@ exactly what a pack does with each kind of mismatch. Neither project
 needs its dependencies installed; GhostDeps reads files, it never runs
 or installs anything.
 
+The commands below assume you run them from this `examples/` directory
+and that `ghostdeps` is on your PATH (see the install notes in the top
+level README; from a source checkout without installing, use
+`PYTHONPATH=../src python3 -m ghostdeps` in place of `ghostdeps`).
+Output directories (`out-python`, `out-node`) are created for you and
+are safe to delete afterwards; the example projects themselves are
+never modified.
+
+Both examples exit 1 under `doctor` and `pack`, on purpose: each one
+plants an imported-but-not-declared package, and that is the one
+finding that sets exit code 1. A project whose declarations and
+imports line up exits 0, and the planted "declared, not imported"
+entries below are the reason neither example exits 1 on their account:
+that section is information, not a finding.
+
 ## python_project
 
 - `pyproject.toml` declares requests, colorama, and Pillow.
@@ -60,3 +75,17 @@ What to look for in `out-node/DEPS.md`:
 JavaScript and TypeScript import extraction is parser-lite (pattern
 matching over import and require statements), and every report labels
 it that way. Python imports are read with the real `ast` parser.
+
+## Reading the machine-readable pack
+
+Each pack also writes `deps-manifest.json` next to `DEPS.md`, with the
+same facts plus the per-entry evidence. To browse it:
+
+```
+python3 -m json.tool out-python/deps-manifest.json | head -n 60
+```
+
+The keys worth knowing first are `sections` (the four report sections),
+`counts` (the summary numbers), `sources` (every manifest or lockfile
+found, and whether it was parsed or only detected), and `source_groups`
+(the same sources grouped by the directory that holds them).

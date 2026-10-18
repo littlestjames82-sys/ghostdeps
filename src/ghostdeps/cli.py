@@ -19,6 +19,12 @@ from .xref import build_pack, render_deps_md
 
 
 def _analyse(project: Path):
+    """Discover manifests, scan imports, and build the pack dict.
+
+    Returns ``(sources, parsed, pack)`` where ``parsed`` is the subset
+    of sources whose status is ``"parsed"``; callers use it to decide
+    the exit code when nothing could be parsed at all.
+    """
     sources = discover_sources(project)
     parsed = [s for s in sources if s.status == "parsed"]
     idx = scan_imports(project)
@@ -27,6 +33,12 @@ def _analyse(project: Path):
 
 
 def cmd_pack(args) -> int:
+    """Run ``ghostdeps pack``: write DEPS.md + deps-manifest.json.
+
+    Returns 0 when there are no imported-not-declared findings, 1 when
+    such findings are present, and 2 when the project is missing or no
+    manifest or lockfile could be parsed.
+    """
     project = Path(args.project)
     if not project.is_dir():
         print(f"ghostdeps: project not found: {project}", file=sys.stderr)
@@ -39,11 +51,20 @@ def cmd_pack(args) -> int:
             print(f"  {s.rel}: {s.status} ({s.note})", file=sys.stderr)
         return 2
     out = Path(args.output) if args.output else project / "deps-pack"
-    out.mkdir(parents=True, exist_ok=True)
-    md = render_deps_md(pack)
-    (out / "DEPS.md").write_text(md, encoding="utf-8")
-    (out / "deps-manifest.json").write_text(
-        json.dumps(pack, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        md = render_deps_md(pack)
+        (out / "DEPS.md").write_text(md, encoding="utf-8")
+        (out / "deps-manifest.json").write_text(
+            json.dumps(pack, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        # An unwritable output path (or a rendering guard tripping)
+        # is a reported failure with the pack's exit-2 contract, not
+        # a traceback.
+        print(f"ghostdeps: could not write pack to {out}: {exc}",
+              file=sys.stderr)
+        return 2
     c = pack["counts"]
     print(f"GhostDeps pack: {project}")
     print(f"  declared {c['declared']} | declared and imported "
@@ -58,6 +79,12 @@ def cmd_pack(args) -> int:
 
 
 def cmd_doctor(args) -> int:
+    """Run ``ghostdeps doctor``: report sources found, without writing a pack.
+
+    Prints which manifests and lockfiles were found, which were parsed
+    versus detected only, the import-extraction method per ecosystem,
+    and the summary counts. Uses the same exit codes as ``pack``.
+    """
     project = Path(args.project)
     if not project.is_dir():
         print(f"ghostdeps: project not found: {project}", file=sys.stderr)
@@ -106,26 +133,59 @@ def cmd_doctor(args) -> int:
 
 
 def main(argv=None) -> int:
+    """Parse command-line arguments and dispatch to ``pack`` or ``doctor``.
+
+    Exit codes (both subcommands): 0 = pack built, no findings;
+    1 = findings present (an import with no declaration found);
+    2 = could not build a pack (project missing, or no manifest
+    or lockfile could be parsed).
+    """
     parser = argparse.ArgumentParser(
         prog="ghostdeps",
         description="Dependency context pack from local manifests, "
                     "lockfiles, and imports. Local evidence only, "
-                    "no network, no verdicts.")
+                    "no network, no verdicts.",
+        epilog="Examples:\n"
+               "  ghostdeps pack path/to/project\n"
+               "  ghostdeps pack path/to/project -o out --json\n"
+               "  ghostdeps doctor path/to/project\n"
+               "\n"
+               "Exit codes: 0 = no findings, 1 = imported with no\n"
+               "declaration found, 2 = could not build a pack.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version",
                         version=f"ghostdeps {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_pack = sub.add_parser("pack", help="build DEPS.md + deps-manifest.json")
-    p_pack.add_argument("project")
+    p_pack = sub.add_parser(
+        "pack", help="build DEPS.md + deps-manifest.json for a project",
+        description="Build a dependency pack for PROJECT: write "
+                    "DEPS.md (human report) and deps-manifest.json "
+                    "(same facts, machine-readable) to the output "
+                    "directory. Read-only: nothing in PROJECT is changed.",
+        epilog="Example: ghostdeps pack path/to/project -o out",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p_pack.add_argument("project",
+                        help="path to the project directory to scan")
     p_pack.add_argument("-o", "--output",
                         help="output directory (default: <project>/deps-pack)")
     p_pack.add_argument("--json", action="store_true",
                         help="also print the manifest JSON to stdout")
     p_pack.set_defaults(func=cmd_pack)
 
-    p_doc = sub.add_parser("doctor", help="report what was found and parsed")
-    p_doc.add_argument("project")
-    p_doc.add_argument("--json", action="store_true")
+    p_doc = sub.add_parser(
+        "doctor", help="report what was found and parsed, without writing a pack",
+        description="Report what GhostDeps finds in PROJECT: which "
+                    "manifests and lockfiles were found, which were "
+                    "parsed versus detected only, how imports were "
+                    "extracted per ecosystem, and the summary counts. "
+                    "Writes no files.",
+        epilog="Example: ghostdeps doctor path/to/project --json",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p_doc.add_argument("project",
+                       help="path to the project directory to inspect")
+    p_doc.add_argument("--json", action="store_true",
+                       help="print the report as JSON instead of text")
     p_doc.set_defaults(func=cmd_doctor)
 
     args = parser.parse_args(argv)

@@ -90,18 +90,41 @@ def js_package_name(specifier: str) -> str | None:
     """Package name for a bare JS/TS specifier, or None if it is a path.
 
     Relative (./ ../), absolute (/), and URL specifiers are not packages.
-    Scoped names keep both segments (@scope/name).
+    Scoped names keep both segments (@scope/name). A ``node:`` prefix
+    is stripped first, so ``node:fs`` and ``fs`` name the same builtin
+    instead of two different modules. Malformed scoped specifiers
+    (``@scope`` with no package, ``@scope/`` with an empty package,
+    ``@/pkg`` with an empty scope), names containing whitespace, and
+    Windows drive paths are not packages and return None; they used
+    to be reported as imported-but-undeclared packages.
     """
     if not specifier or specifier.startswith((".", "/", "#")):
         return None
     if "://" in specifier:
         return None
+    if len(specifier) >= 3 and specifier[1] == ":" \
+            and specifier[2] in ("/", "\\"):
+        return None  # Windows drive path, e.g. C:/src/util
+    if any(ch.isspace() for ch in specifier):
+        return None
+    if specifier.startswith("node:"):
+        specifier = specifier[5:]
+        if not specifier:
+            return None
     parts = specifier.split("/")
-    if specifier.startswith("@") and len(parts) >= 2:
+    if specifier.startswith("@"):
+        if len(parts) < 2 or not parts[0][1:] or not parts[1]:
+            return None
         return "/".join(parts[:2])
-    return parts[0]
+    return parts[0] or None
 
 
 def js_builtin(specifier: str) -> bool:
+    """True when ``specifier`` names a Node.js builtin module.
+
+    Both bare names (``fs``) and ``node:``-prefixed forms
+    (``node:fs``) are recognised, including subpaths such as
+    ``fs/promises``.
+    """
     name = specifier[5:] if specifier.startswith("node:") else specifier
     return name.split("/")[0] in NODE_BUILTINS

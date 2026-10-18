@@ -41,21 +41,30 @@ BANNED_WORDING = [
     "security risk",
 ]
 
-_EXACT_PIN = re.compile(r"^(?:==|=|)\s*([0-9][\w.!*-]*)$")
+_EXACT_PIN = re.compile(r"^(?:==|=|)\s*([0-9][\w.!+-]*)$")
 _RANGE_HINT = re.compile(r"^[~^><]")
+_WILDCARD_SEGMENT = re.compile(r"(?:^|\.)[xX](?:\.|$)")
 
 
 def _spec_pin(spec: str) -> str | None:
     """Version string if a manifest spec is one exact pin, else None.
 
     A bare `1.2.3`, `==1.2.3`, or `=1.2.3` is an exact pin as recorded.
-    Ranges (~, ^, >=, wildcards with operators) are not pins.
+    Ranges (~, ^, >=, wildcards with operators) are not pins. A
+    wildcard is a range even when it wears no operator: `1.2.*`,
+    `==1.2.*`, and `1.2.x` name a family of versions, and recording
+    them as exact pins misstates the local evidence.
     """
     s = (spec or "").strip()
-    if not s or "," in s or _RANGE_HINT.match(s):
+    if not s or "," in s or "*" in s or _RANGE_HINT.match(s):
         return None
     m = _EXACT_PIN.match(s)
-    return m.group(1) if m else None
+    if not m:
+        return None
+    version = m.group(1)
+    if _WILDCARD_SEGMENT.search(version):
+        return None
+    return version
 
 
 def _source_groups(sources: list) -> list[dict]:
@@ -84,6 +93,15 @@ def _source_groups(sources: list) -> list[dict]:
 
 
 def build_pack(root_label: str, sources: list, idx: ImportIndex) -> dict:
+    """Cross-reference parsed sources against scanned imports.
+
+    ``sources`` are :class:`~ghostdeps.manifests.SourceResult` objects
+    and ``idx`` is the import index from the scanner. Returns the pack
+    dict that is written verbatim to ``deps-manifest.json`` and rendered
+    by :func:`render_deps_md`. Declared and imported names are matched
+    on ``(ecosystem, normalised name)`` keys, so an entry only counts as
+    used when the import belongs to the same ecosystem.
+    """
     declarations: list[dict] = []
     pins: list[dict] = []
     build_requirements: list[dict] = []
@@ -97,8 +115,9 @@ def build_pack(root_label: str, sources: list, idx: ImportIndex) -> dict:
         for d in src.declarations:
             # Cargo version strings are requirements (caret semantics),
             # not pins; Cargo's recorded pins live in Cargo.lock, which
-            # v0.1 lists as detected-not-parsed. So manifest pins are
-            # only taken from Python/JS specs where ==/bare is exact.
+            # is parsed at summary level for exactly that reason. So
+            # manifest pins are only taken from Python/JS specs where
+            # ==/bare is exact.
             if eco_of_source.get(d["source"]) == "rust":
                 continue
             pin = _spec_pin(d["spec"])
@@ -252,6 +271,12 @@ def _fmt_specs(specs: list[dict]) -> str:
 
 
 def render_deps_md(pack: dict) -> str:
+    """Render a pack dict (see :func:`build_pack`) as the ``DEPS.md`` text.
+
+    Raises ``ValueError`` if any banned verdict wording would appear in
+    the rendered report; that guard is a bug check, not user-facing
+    validation, because the wording here is fixed copy.
+    """
     c = pack["counts"]
     lines: list[str] = []
     lines.append("# GhostDeps pack")
@@ -399,6 +424,13 @@ def render_deps_md(pack: dict) -> str:
                  "pins are listed in full, transitive pins are recorded "
                  "as a compact name=version list per lockfile, and "
                  "nested entries are counted, not reproduced.")
+    lines.append("- Cargo.lock is read at summary level: local "
+                 "(source-less) packages are the project itself and are "
+                 "excluded from pins, packages a local package lists as "
+                 "dependencies are direct pins listed in full, and all "
+                 "other pins are recorded as a compact name=version "
+                 "list per lockfile. Checksums and the full dependency "
+                 "graph are not reproduced.")
     lines.append("- Import name to distribution name mapping uses a small "
                  "built-in table plus normalisation; unmapped names are "
                  "compared as written.")
@@ -407,8 +439,79 @@ def render_deps_md(pack: dict) -> str:
         lines.append(f"> {note}")
     lines.append("")
     text = "\n".join(lines)
-    lowered = text.lower()
+    lowered = _scrub_evidence(text, pack)
     for banned in BANNED_WORDING:
         if banned in lowered:
             raise ValueError(f"banned wording reached DEPS.md: {banned!r}")
     return text
+
+
+def _evidence_strings(pack: dict) -> list[str]:
+    """User-controlled strings rendered into DEPS.md as evidence:
+    the project path, package names, file names, specs, versions, and
+    source notes. The banned-wording guard judges the tool's own
+    prose, not this evidence: a dependency literally named
+    ``outdated-thing``, or a project checked out under a directory
+    containing ``vulnerable``, is a fact to report, and it used to
+    make rendering raise and the whole pack fail.
+    """
+    out: set[str] = set()
+
+    def add(value):
+        if isinstance(value, str) and len(value.strip()) >= 2:
+            out.add(value)
+
+    add(pack.get("root"))
+    for src in pack.get("sources", []):
+        add(src.get("file"))
+        add(src.get("note"))
+    for group in pack.get("source_groups", []):
+        add(group.get("directory"))
+        for fname in group.get("files", []):
+            add(fname)
+    sections = pack.get("sections", {})
+    for key in ("declared_and_used", "declared_not_imported"):
+        for entry in sections.get(key, []):
+            add(entry.get("name"))
+            for fname in entry.get("imported_in", []):
+                add(fname)
+            for fname in entry.get("declared_in", []):
+                add(fname)
+            for spec in entry.get("specs", []):
+                add(spec.get("spec"))
+                add(spec.get("source"))
+    for entry in sections.get("imported_not_declared", []):
+        add(entry.get("name"))
+        add(entry.get("import_name"))
+        for fname in entry.get("imported_in", []):
+            add(fname)
+    for pin in sections.get("pins", []):
+        add(pin.get("name"))
+        add(pin.get("version"))
+        add(pin.get("source"))
+    for group in sections.get("transitive_pins", []):
+        add(group.get("source"))
+        for entry in group.get("pins", []):
+            add(entry)
+    for req in pack.get("build_requirements", []):
+        add(req.get("name"))
+        add(req.get("spec"))
+        add(req.get("source"))
+    return sorted(out, key=len, reverse=True)
+
+
+def _scrub_evidence(text: str, pack: dict) -> str:
+    """Lowercased ``text`` with evidence strings blanked out.
+
+    Only standalone occurrences are blanked (a name character on
+    either side means the match is inside a larger word, which is
+    prose, not the evidence rendering), so tool prose is still
+    checked whole.
+    """
+    scrubbed = text.lower()
+    for evidence in _evidence_strings(pack):
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9._-])" + re.escape(evidence.lower()) +
+            r"(?![A-Za-z0-9._-])")
+        scrubbed = pattern.sub(" ", scrubbed)
+    return scrubbed

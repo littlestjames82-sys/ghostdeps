@@ -122,13 +122,21 @@ class IgnoreMatcher:
         if not path.is_file():
             return
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             self.warnings.append(
                 ".ghostslice.json could not be read as JSON; "
                 "its ignore list was not applied")
             return
-        if not isinstance(data, dict) or "ignore" not in data:
+        if not isinstance(data, dict):
+            # Valid JSON of the wrong shape (a list, a bare string)
+            # used to be skipped silently, indistinguishable from a
+            # profile that simply has no ignore list.
+            self.warnings.append(
+                ".ghostslice.json top level is not an object; "
+                "its ignore list was not applied")
+            return
+        if "ignore" not in data:
             return
         patterns = data.get("ignore")
         if not isinstance(patterns, list) or \
@@ -152,7 +160,7 @@ class IgnoreMatcher:
         self.gitignore_files.append(path.relative_to(self.root).as_posix())
         try:
             lines = path.read_text(
-                encoding="utf-8", errors="replace").splitlines()
+                encoding="utf-8-sig", errors="replace").splitlines()
         except OSError:
             self.warnings.append(
                 f"{path.relative_to(self.root).as_posix()} could not be "
