@@ -1,4 +1,5 @@
 # GhostDeps
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 GhostDeps packs what a project depends on into a short brief an agent
 (or a person) can read before touching the code: what the project
@@ -203,3 +204,16 @@ know it exists.
 
 v0.1, local CLI first. Zero-dependency Python standard library, same
 as the rest of the GhostSlice companion suite.
+
+---
+<!-- ghost-studio-footer -->
+## More from Ghost Developer Studio
+
+Ghost Developer Studio builds developer tools, AI-agent safety software, and practical apps, and sells by showing working software, not slide decks.
+
+- [Roadmap board](https://github.com/littlestjames82-sys/ghost-roadmaps): where every studio product stands
+- [Agent Seatbelt](https://github.com/littlestjames82-sys/agent-seatbelt): deterministic guardrails for AI coding agents
+- [Ghost Hands](https://github.com/littlestjames82-sys/ghost-hands): governed, recorded, replayable agent hands
+- [GhostSlice](https://github.com/littlestjames82-sys/ghostslice): agent context and prompt optimizer
+- [GhostIDE](https://github.com/littlestjames82-sys/ghostide-android): fully offline AI code editor for Android
+- [All studio projects](https://github.com/littlestjames82-sys?tab=repositories)
