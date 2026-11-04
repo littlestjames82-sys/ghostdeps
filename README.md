@@ -1,5 +1,6 @@
 # GhostDeps
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/littlestjames82-sys/ghostdeps/actions/workflows/ci.yml/badge.svg)](https://github.com/littlestjames82-sys/ghostdeps/actions/workflows/ci.yml/actions)
 
 GhostDeps packs what a project depends on into a short brief an agent
 (or a person) can read before touching the code: what the project
